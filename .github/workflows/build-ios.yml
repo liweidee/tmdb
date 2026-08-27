@@ -5,34 +5,32 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build-ios:
     runs-on: macos-latest
 
     steps:
-      # 1. 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 设置 Flutter 环境
+      # 使用包含 Dart 3.7+ 的 Flutter 版本
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.4' # 根据 SDK 约束 ^3.7.0，使用最新的稳定版，建议调整
+          flutter-version: '3.29.0'   # 或 '3.30.0' / 'stable'
           channel: 'stable'
           cache: true
 
-      # 3. 安装项目依赖
       - name: Install dependencies
         run: flutter pub get
 
-      # 4. 生成代码（json_serializable, drift, retrofit 等需要 build_runner）
+      # 运行代码生成器
       - name: Run build_runner
         run: flutter pub run build_runner build --delete-conflicting-outputs
 
-      # 5. 设置 Ruby 环境并安装 CocoaPods
+      # 设置 Ruby 和 CocoaPods
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -44,15 +42,13 @@ jobs:
           sudo gem install cocoapods
           pod --version
 
-      # 6. 安装 iOS 项目 Pods
       - name: Install Pods
         run: |
           cd ios
           pod install
           cd ..
 
-      # 7. 设置代码签名（需预先配置证书和描述文件）
-      # 推荐使用 fastlane match 或手动导入证书，这里用 Apple 官方方式示例
+      # 证书和描述文件导入（需提前配置 Secrets）
       - name: Install provisioning profile
         env:
           PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
@@ -65,7 +61,6 @@ jobs:
           echo $PROVISIONING_PROFILE_BASE64 | base64 --decode > $PROVISIONING_PROFILE_PATH
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp $PROVISIONING_PROFILE_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
-          # 获取 UUID
           UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< $(security cms -D -i $PROVISIONING_PROFILE_PATH))
           mv ~/Library/MobileDevice/Provisioning\ Profiles/$PROVISIONING_PROFILE_PATH ~/Library/MobileDevice/Provisioning\ Profiles/${UUID}.mobileprovision
 
@@ -79,41 +74,30 @@ jobs:
             echo "Warning: No certificate provided. Skipping install."
             exit 0
           fi
-          # 创建临时钥匙串
           security create-keychain -p "$P12_PASSWORD" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "$P12_PASSWORD" $KEYCHAIN_PATH
-
           echo $BUILD_CERTIFICATE_BASE64 | base64 --decode > ${{ runner.temp }}/cert.p12
           security import ${{ runner.temp }}/cert.p12 -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
           security set-key-partition-list -S apple-tool:,apple: -s -k "$P12_PASSWORD" $KEYCHAIN_PATH
 
-      # 8. 构建 iOS App（使用 xcodebuild 或 flutter build ios）
-      - name: Build iOS App (Release)
+      # 构建并导出 IPA（使用 flutter build ipa 更简洁）
+      - name: Build and export IPA
         run: |
-          flutter build ios --release --no-codesign # 若需要签名，去掉 --no-codesign，并设置 export 选项
+          flutter build ipa \
+            --release \
+            --export-options-plist ios/ExportOptions.plist
         env:
           FLUTTER_BUILD_NUMBER: ${{ github.run_number }}
           FLUTTER_BUILD_NAME: 7.6.5
+          # 签名所需的环境变量由 Flutter 从 xcode 项目中读取，通常需在 ExportOptions.plist 中指定
+          # 如需手动指定团队，可添加：--dart-define=DEVELOPMENT_TEAM=...
 
-      # 9. 导出 IPA（若需要分发，可集成 fastlane）
-      # 简单的导出方式：使用 xcodebuild -exportArchive
-      - name: Archive and Export IPA
-        run: |
-          # 使用 Flutter 生成的 Runner.xcarchive
-          cd ios
-          xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release -archivePath build/Runner.xcarchive archive
-          xcodebuild -exportArchive -archivePath build/Runner.xcarchive -exportPath build/ -exportOptionsPlist ExportOptions.plist
-        env:
-          DEVELOPMENT_TEAM: ${{ secrets.IOS_DEVELOPMENT_TEAM }}
-          PROVISIONING_PROFILE_SPECIFIER: ${{ secrets.IOS_PROVISIONING_PROFILE_SPECIFIER }}
-        # 需要提前创建 ExportOptions.plist 或在仓库中提供，这里作为示例
-
-      # 10. 上传 IPA 作为构建产物
+      # 上传 IPA 产物
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
-          path: ios/build/Runner.ipa
+          path: build/ios/ipa/*.ipa
           retention-days: 7
