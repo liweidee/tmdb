@@ -19,18 +19,17 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.29.0'   # 或 '3.30.0' / 'stable'
+          flutter-version: '3.29.0'   # 或 'stable'
           channel: 'stable'
           cache: true
 
       - name: Install dependencies
         run: flutter pub get
 
-      # 运行代码生成器
       - name: Run build_runner
         run: flutter pub run build_runner build --delete-conflicting-outputs
 
-      # 设置 Ruby 和 CocoaPods
+      # Ruby & CocoaPods
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -48,7 +47,7 @@ jobs:
           pod install
           cd ..
 
-      # 证书和描述文件导入（需提前配置 Secrets）
+      # 导入证书和描述文件（与之前相同）
       - name: Install provisioning profile
         env:
           PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
@@ -82,7 +81,38 @@ jobs:
           security list-keychain -d user -s $KEYCHAIN_PATH
           security set-key-partition-list -S apple-tool:,apple: -s -k "$P12_PASSWORD" $KEYCHAIN_PATH
 
-      # 构建并导出 IPA（使用 flutter build ipa 更简洁）
+      # 生成 ExportOptions.plist（从 Secrets）
+      - name: Generate ExportOptions.plist
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          IOS_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
+          IOS_PROVISIONING_PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
+          IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD }}  # 可选，默认 app-store
+        run: |
+          if [ -z "$IOS_TEAM_ID" ] || [ -z "$IOS_BUNDLE_ID" ] || [ -z "$IOS_PROVISIONING_PROFILE_NAME" ]; then
+            echo "Error: Missing required secrets for ExportOptions.plist"
+            exit 1
+          fi
+          cat > ios/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>${IOS_EXPORT_METHOD:-app-store}</string>
+              <key>teamID</key>
+              <string>${IOS_TEAM_ID}</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>${IOS_BUNDLE_ID}</key>
+                  <string>${IOS_PROVISIONING_PROFILE_NAME}</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+          echo "ExportOptions.plist generated successfully."
+
+      # 构建并导出 IPA
       - name: Build and export IPA
         run: |
           flutter build ipa \
@@ -91,8 +121,6 @@ jobs:
         env:
           FLUTTER_BUILD_NUMBER: ${{ github.run_number }}
           FLUTTER_BUILD_NAME: 7.6.5
-          # 签名所需的环境变量由 Flutter 从 xcode 项目中读取，通常需在 ExportOptions.plist 中指定
-          # 如需手动指定团队，可添加：--dart-define=DEVELOPMENT_TEAM=...
 
       # 上传 IPA 产物
       - name: Upload IPA artifact
