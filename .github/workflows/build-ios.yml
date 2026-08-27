@@ -1,4 +1,4 @@
-name: Build iOS
+name: Build iOS (Unsigned for TrollStore)
 
 on:
   push:
@@ -15,11 +15,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 使用包含 Dart 3.7+ 的 Flutter 版本
+      # 使用包含 Dart 3.7+ 的 Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.29.0'   # 或 'stable'
+          flutter-version: '3.29.0'   # 或 stable
           channel: 'stable'
           cache: true
 
@@ -29,7 +29,7 @@ jobs:
       - name: Run build_runner
         run: flutter pub run build_runner build --delete-conflicting-outputs
 
-      # Ruby & CocoaPods
+      # CocoaPods 仍然需要（因为项目依赖）
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -47,85 +47,22 @@ jobs:
           pod install
           cd ..
 
-      # 导入证书和描述文件（与之前相同）
-      - name: Install provisioning profile
-        env:
-          PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-          PROVISIONING_PROFILE_PATH: ${{ runner.temp }}/profile.mobileprovision
+      # 构建未签名的 .app
+      - name: Build unsigned .app
         run: |
-          if [ -z "$PROVISIONING_PROFILE_BASE64" ]; then
-            echo "Warning: No provisioning profile provided. Skipping install."
-            exit 0
-          fi
-          echo $PROVISIONING_PROFILE_BASE64 | base64 --decode > $PROVISIONING_PROFILE_PATH
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp $PROVISIONING_PROFILE_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
-          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< $(security cms -D -i $PROVISIONING_PROFILE_PATH))
-          mv ~/Library/MobileDevice/Provisioning\ Profiles/$PROVISIONING_PROFILE_PATH ~/Library/MobileDevice/Provisioning\ Profiles/${UUID}.mobileprovision
+          flutter build ios --release --no-codesign
 
-      - name: Install certificate
-        env:
-          BUILD_CERTIFICATE_BASE64: ${{ secrets.IOS_BUILD_CERTIFICATE_BASE64 }}
-          P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
-          KEYCHAIN_PATH: ${{ runner.temp }}/build.keychain
+      # 手动打包成 .ipa（无签名）
+      - name: Package unsigned .ipa
         run: |
-          if [ -z "$BUILD_CERTIFICATE_BASE64" ]; then
-            echo "Warning: No certificate provided. Skipping install."
-            exit 0
-          fi
-          security create-keychain -p "$P12_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$P12_PASSWORD" $KEYCHAIN_PATH
-          echo $BUILD_CERTIFICATE_BASE64 | base64 --decode > ${{ runner.temp }}/cert.p12
-          security import ${{ runner.temp }}/cert.p12 -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$P12_PASSWORD" $KEYCHAIN_PATH
-
-      # 生成 ExportOptions.plist（从 Secrets）
-      - name: Generate ExportOptions.plist
-        env:
-          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
-          IOS_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
-          IOS_PROVISIONING_PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
-          IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD }}  # 可选，默认 app-store
-        run: |
-          if [ -z "$IOS_TEAM_ID" ] || [ -z "$IOS_BUNDLE_ID" ] || [ -z "$IOS_PROVISIONING_PROFILE_NAME" ]; then
-            echo "Error: Missing required secrets for ExportOptions.plist"
-            exit 1
-          fi
-          cat > ios/ExportOptions.plist <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>${IOS_EXPORT_METHOD:-app-store}</string>
-              <key>teamID</key>
-              <string>${IOS_TEAM_ID}</string>
-              <key>provisioningProfiles</key>
-              <dict>
-                  <key>${IOS_BUNDLE_ID}</key>
-                  <string>${IOS_PROVISIONING_PROFILE_NAME}</string>
-              </dict>
-          </dict>
-          </plist>
-          EOF
-          echo "ExportOptions.plist generated successfully."
-
-      # 构建并导出 IPA
-      - name: Build and export IPA
-        run: |
-          flutter build ipa \
-            --release \
-            --export-options-plist ios/ExportOptions.plist
-        env:
-          FLUTTER_BUILD_NUMBER: ${{ github.run_number }}
-          FLUTTER_BUILD_NAME: 7.6.5
+          mkdir -p Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -r -9 tmdb-unsigned.ipa Payload
 
       # 上传 IPA 产物
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ipa
-          path: build/ios/ipa/*.ipa
+          name: tmdb-unsigned-ipa
+          path: tmdb-unsigned.ipa
           retention-days: 7
