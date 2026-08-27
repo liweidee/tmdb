@@ -19,7 +19,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.29.0'   # 或 stable
+          flutter-version: '3.29.0'   # 或 'stable'，但建议固定版本
           channel: 'stable'
           cache: true
 
@@ -29,7 +29,15 @@ jobs:
       - name: Run build_runner
         run: flutter pub run build_runner build --delete-conflicting-outputs
 
-      # CocoaPods 仍然需要（因为项目依赖）
+      # === 关键修复：创建 .env 文件，防止资源缺失 ===
+      - name: Create .env file
+        run: |
+          # 如果项目依赖具体变量，可从 Secrets 注入，例如：
+          # echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" > .env
+          # 否则直接创建空文件即可
+          touch .env
+
+      # CocoaPods 环境
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -52,14 +60,14 @@ jobs:
         run: |
           flutter build ios --release --no-codesign
 
-      # 手动打包成 .ipa（无签名）
+      # 手动打包成 .ipa（无签名，适用于 TrollStore）
       - name: Package unsigned .ipa
         run: |
           mkdir -p Payload
           cp -R build/ios/iphoneos/Runner.app Payload/
           zip -r -9 tmdb-unsigned.ipa Payload
 
-      # 上传 IPA 产物
+      # 上传产物
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
